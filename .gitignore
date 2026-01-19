@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+data/
+datasets/
+runs/
+logs/
+outputs/
+checkpoints/
+models/
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+*.npz
+*.npy
+*.csv
+
+# ignore all directories (folders) everywhere
+**/
+
+# but keep files in the root (optional)
+!/*
+TU_IOT_to_Office/
