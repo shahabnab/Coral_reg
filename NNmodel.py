@@ -39,28 +39,41 @@ class CoralLambdaRampUp(tf.keras.callbacks.Callback):
         if self.verbose:
             print(f"[CoralLambdaRampUp] epoch={epoch} coral_lambda={float(self.lambda_var.numpy()):.6f}")
 
+import tensorflow as tf
+
 def build_coral_cir_reg_model(input_shape, latent_dim=64, base_filters=32, dropout=0.10):
-    x_in = tf.keras.Input(shape=input_shape, name="x")
+    """
+    Returns a model with 3 outputs:
+      - "pred"   : regression output (B,1)
+      - "latent" : latent vector (B,latent_dim)
+      - "recon"  : reconstructed input (B,T,C)  -> used for recon loss
+    """
+    x_in = tf.keras.Input(shape=input_shape, name="x")  # (T,C)
 
+    # ----- Encoder -----
     x = tf.keras.layers.Conv1D(base_filters, 9, padding="same", activation="relu")(x_in)
-    x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.MaxPool1D(2)(x)
-
     x = tf.keras.layers.Conv1D(base_filters * 2, 7, padding="same", activation="relu")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.MaxPool1D(2)(x)
-
     x = tf.keras.layers.Conv1D(base_filters * 4, 5, padding="same", activation="relu")(x)
-    x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
 
-    x = tf.keras.layers.Dropout(dropout)(x)
-    z = tf.keras.layers.Dense(latent_dim, activation=None, name="latent")(x)
+    z = tf.keras.layers.Dense(latent_dim, name="latent")(x)
 
-    h = tf.keras.layers.LayerNormalization()(z)
-    h = tf.keras.layers.Dense(max(latent_dim // 2, 8), activation="relu")(h)
+    # ----- Regression head -----
+    h = tf.keras.layers.Dense(max(latent_dim // 2, 8), activation="relu")(z)
     h = tf.keras.layers.Dropout(dropout)(h)
+    pred = tf.keras.layers.Dense(1, name="pred")(h)
 
-    pred = tf.keras.layers.Dense(1, activation=None, name="pred")(h)
+    # ----- Decoder (reconstruction head) -----
+    T = int(input_shape[0])
+    C = int(input_shape[1]) if len(input_shape) > 1 else 1
 
-    return tf.keras.Model(x_in, {"pred": pred, "latent": z}, name="coral_cir_reg_model")
+    d = tf.keras.layers.Dense((T // 4) * (base_filters * 2), activation="relu")(z)
+    d = tf.keras.layers.Reshape((T // 4, base_filters * 2))(d)
+    d = tf.keras.layers.UpSampling1D(2)(d)
+    d = tf.keras.layers.Conv1D(base_filters, 7, padding="same", activation="relu")(d)
+    d = tf.keras.layers.UpSampling1D(2)(d)
+    recon = tf.keras.layers.Conv1D(C, 9, padding="same", activation=None, name="recon")(d)
+
+    return tf.keras.Model(x_in, {"pred": pred, "latent": z, "recon": recon})

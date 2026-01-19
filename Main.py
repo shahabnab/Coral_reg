@@ -100,7 +100,28 @@ def save_parallel_wide(study, out_dir, params=None,
     fig.savefig(out / "parallel_coordinate_wide.png", dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
+def build_engine_config(*, s_d, source_ids, target_id):
+    """
+    Build a complete base config once per scenario.
+    Optuna will copy and modify it per trial.
+    """
+    return EngineConfig(
+        task_type="reg",
+        adaption_with_label=int(s_d["ADAPTION_WITH_LABEL"]),
 
+        use_coral=True,
+        coral_lambda=0.2,                 # placeholder (Optuna will override via tf.Variable)
+        coral_target_id=int(target_id),
+        coral_source_ids=tuple(source_ids),
+
+        use_recon=True,
+        recon_lambda=0.05,                # placeholder (Optuna will override)
+        output_recon_key="recon",
+
+        grad_clipnorm=5.0,
+        output_pred_key="pred",
+        output_latent_key="latent",
+    )
 
 
 def run_optuna(objective_fn, s_d, SEED, SAVE_PLOTS_ROOT, CONFIG_ATTR, WHOLE_RES_XLSX,
@@ -110,7 +131,7 @@ def run_optuna(objective_fn, s_d, SEED, SAVE_PLOTS_ROOT, CONFIG_ATTR, WHOLE_RES_
     study = optuna.create_study(
         direction=direction,
         sampler=optuna.samplers.TPESampler(seed=SEED, multivariate=True, group=True, n_startup_trials=20),
-        storage=f"sqlite:///{SAVE_PLOTS_ROOT / 'optuna_study.db'}",
+        storage="sqlite:////tmp/optuna_study.db",
         pruner=pruner,
     )
 
@@ -227,20 +248,7 @@ def run_scenario(s_d):
     source_ids = tuple(range(len(s_d["Training_datasets"])))
     target_id  = int(s_d["PL_DOMAIN_ID"])
 
-    cfg_base = EngineConfig(
-        task_type="reg",
-        adaption_with_label=s_d["ADAPTION_WITH_LABEL"],
-        use_coral=True,
-        coral_lambda=0.2,
-        coral_target_id=target_id,
-        coral_source_ids=source_ids,
-        grad_clipnorm=5.0,
-        output_pred_key="pred",
-        output_latent_key="latent",
-        output_recon_key="recon",   # NEW
-        recon_lambda=0.1,           # NEW default (overridden per-trial below)
-        use_recon=True,             # NEW
-    )
+    cfg_base = build_engine_config(s_d=s_d, source_ids=source_ids, target_id=target_id)
 
     class EvalSplitTrends(tf.keras.callbacks.Callback):
         """
@@ -313,7 +321,8 @@ def run_scenario(s_d):
         lr     = float(trial.suggest_float("LR", 1e-5, 3e-3, log=True))
 
         coral_lambda = float(trial.suggest_float("CORAL_LAMBDA", 0.0, 2.0))
-        recon_lambda = float(trial.suggest_float("RECON_LAMBDA", 0.0, 1.0))  # NEW
+        recon_lambda = float(trial.suggest_float("RECON_LAMBDA", 1e-4, 1e-1, log=True))
+
 
         latent_dim   = int(trial.suggest_categorical("LATENT_DIM", [32, 64, 128, 256]))
         base_filters = int(trial.suggest_categorical("BASE_FILTERS", [16, 32, 48, 64]))

@@ -103,7 +103,7 @@ class EngineConfig:
     coral_source_ids: Tuple[int, ...] = (0, 1)
 
     # NEW: reconstruction regularizer
-    use_recon: bool = False
+    use_recon: bool = True
     recon_lambda: float = 0.0
     output_recon_key: str = "recon"
 
@@ -121,10 +121,16 @@ def _parse_model_outputs(
     cfg: EngineConfig,
 ) -> Tuple[tf.Tensor, tf.Tensor]:
     if isinstance(outputs, dict):
+        if cfg.output_pred_key not in outputs:
+            raise KeyError(f"Missing pred key '{cfg.output_pred_key}' in model outputs. Keys={list(outputs.keys())}")
+        if cfg.output_latent_key not in outputs:
+            raise KeyError(f"Missing latent key '{cfg.output_latent_key}' in model outputs. Keys={list(outputs.keys())}")
         return outputs[cfg.output_pred_key], outputs[cfg.output_latent_key]
+
     if isinstance(outputs, (tuple, list)) and len(outputs) >= 2:
         return outputs[0], outputs[1]
-    raise ValueError("Model outputs must be dict {'pred','latent'} or tuple (pred, latent).")
+
+    raise ValueError("Model outputs must be dict with pred/latent or tuple/list (pred, latent).")
 
 def _weighted_mean(loss_vec: tf.Tensor, weights: tf.Tensor) -> tf.Tensor:
     loss_vec = tf.cast(loss_vec, tf.float32)
@@ -134,14 +140,20 @@ def _weighted_mean(loss_vec: tf.Tensor, weights: tf.Tensor) -> tf.Tensor:
     return tf.math.divide_no_nan(num, den)
 
 def _mse_vec(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-    # Graph-safe: reshape everything to [B, K], then reduce over K -> [B]
     y_true = tf.cast(y_true, tf.float32)
     y_pred = tf.cast(y_pred, tf.float32)
 
+    # reshape to [B, T] or [B, K]
     y_true = tf.reshape(y_true, [tf.shape(y_true)[0], -1])
     y_pred = tf.reshape(y_pred, [tf.shape(y_pred)[0], -1])
 
-    return tf.reduce_mean(tf.square(y_true - y_pred), axis=1)  # [B]
+    # use common length
+    L = tf.minimum(tf.shape(y_true)[1], tf.shape(y_pred)[1])
+    y_true = y_true[:, :L]
+    y_pred = y_pred[:, :L]
+
+    return tf.reduce_mean(tf.square(y_true - y_pred), axis=1)
+
 
 def _lambda_tensor(x: Any) -> tf.Tensor:
     t = tf.convert_to_tensor(x, dtype=tf.float32)
@@ -208,17 +220,18 @@ class CoralTrainingModel(tf.keras.Model):
 
         task_w = w * tf.cast(is_labeled, tf.float32)
 
+        recon_w = tf.cast(self.cfg.recon_lambda, tf.float32)
+        lam = _lambda_tensor(self.cfg.coral_lambda) if self.cfg.use_coral else tf.constant(0.0, tf.float32)
+
         with tf.GradientTape() as tape:
             outputs = self.base(x, training=True)
             y_pred, z = _parse_model_outputs(outputs, self.cfg)
 
             # task loss (labeled only)
-            loss_vec = _mse_vec(y, y_pred)
+            loss_vec = _mse_vec(y, y_pred)     # [B]
             task = _weighted_mean(loss_vec, task_w)
 
-            # graph-safe CORAL lambda (supports tf.Variable ramp-up)
-            lam = _lambda_tensor(self.cfg.coral_lambda) if self.cfg.use_coral else tf.constant(0.0, tf.float32)
-
+            # coral loss
             def _coral_branch():
                 return coral_multi_source_to_target(
                     feats=z, dom_ids=d,
@@ -228,15 +241,15 @@ class CoralTrainingModel(tf.keras.Model):
 
             coral = tf.cond(tf.greater(lam, 0.0), _coral_branch, lambda: tf.constant(0.0, tf.float32))
 
-            # NEW: reconstruction loss (all samples, no labels needed)
+            # recon loss (all samples)
             recon = tf.constant(0.0, tf.float32)
-            if self.cfg.use_recon and float(self.cfg.recon_lambda) > 0.0:
+            if self.cfg.use_recon:
                 x_hat = _parse_recon(outputs, self.cfg)
                 if x_hat is not None:
-                    recon_vec = _mse_vec(x, x_hat)  # MSE per-sample
+                    recon_vec = _mse_vec(x, x_hat)   # [B]
                     recon = _weighted_mean(recon_vec, w)
 
-            total = task + lam * coral + tf.cast(self.cfg.recon_lambda, tf.float32) * recon
+            total = task + lam * coral + recon_w * recon
 
             opt = self.optimizer
             if hasattr(opt, "get_scaled_loss"):
@@ -258,7 +271,7 @@ class CoralTrainingModel(tf.keras.Model):
         self.total_loss_tracker.update_state(total)
         self.task_loss_tracker.update_state(task)
         self.coral_loss_tracker.update_state(coral)
-        self.recon_loss_tracker.update_state(recon)  # NEW
+        self.recon_loss_tracker.update_state(recon)
 
         # metrics on labeled samples only
         y_true_2d = tf.reshape(tf.cast(y, tf.float32), [tf.shape(y)[0], -1])
@@ -281,18 +294,19 @@ class CoralTrainingModel(tf.keras.Model):
         task = _weighted_mean(loss_vec, w)
 
         recon = tf.constant(0.0, tf.float32)
-        if self.cfg.use_recon and float(self.cfg.recon_lambda) > 0.0:
+        if self.cfg.use_recon:
             x_hat = _parse_recon(outputs, self.cfg)
             if x_hat is not None:
                 recon_vec = _mse_vec(x, x_hat)
                 recon = _weighted_mean(recon_vec, w)
 
-        total = task + tf.cast(self.cfg.recon_lambda, tf.float32) * recon
+        recon_w = tf.cast(self.cfg.recon_lambda, tf.float32)
+        total = task + recon_w * recon
 
         self.total_loss_tracker.update_state(total)
         self.task_loss_tracker.update_state(task)
         self.coral_loss_tracker.update_state(0.0)
-        self.recon_loss_tracker.update_state(recon)  # NEW
+        self.recon_loss_tracker.update_state(recon)
 
         y_true_2d = tf.reshape(tf.cast(y, tf.float32), [tf.shape(y)[0], -1])
         y_pred_2d = tf.reshape(tf.cast(y_pred, tf.float32), [tf.shape(y_pred)[0], -1])
