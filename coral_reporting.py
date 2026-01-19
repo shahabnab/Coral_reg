@@ -270,7 +270,7 @@ def save_eval_excel_and_plots(
     return metrics
 
 
-def save_range_metrics_excel(
+""" def save_range_metrics_excel(
     save_dir,
     model_or_path,
     splits,
@@ -278,7 +278,7 @@ def save_range_metrics_excel(
     excel_name: str = "range_metrics.xlsx",
     label_mode: Optional[Literal["ratio", "error"]] = None,
 ):
-    """
+    
     Saves a separate Excel file with range errors (in meters):
       - camera vs sensor
       - camera vs predicted_rng (derived from predicted label)
@@ -286,7 +286,7 @@ def save_range_metrics_excel(
     label_mode:
       - "ratio": model output interpreted as error_ratio, pred_error = y_pred * sensor_rng
       - "error": model output interpreted as raw error (m), pred_error = y_pred
-    """
+    
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -356,4 +356,113 @@ def save_range_metrics_excel(
     # also save csv summary
     df_summary.to_csv(save_dir / "range_metrics_summary.csv", index=False)
 
+    return df_summary """
+
+from pathlib import Path
+import numpy as np
+import pandas as pd
+
+# import these from utilities (or wherever you placed them)
+# from utilities import get_coral_label_mode, load_run_meta
+
+def _as_1d(x) -> np.ndarray:
+    x = np.asarray(x)
+    return x.reshape(-1)
+
+def _resolve_label_mode_global(model_or_path) -> str:
+    """
+    Priority:
+      1) If model_or_path is a directory and has run_meta.json, use that
+      2) else use env CORAL_LABEL_MODE
+    """
+    p = Path(model_or_path) if isinstance(model_or_path, (str, Path)) else None
+    if p is not None and p.exists() and p.is_dir():
+        meta = load_run_meta(p)
+        m = meta.get("CORAL_LABEL_MODE", "").strip().lower()
+        if m in ("ratio", "error"):
+            return m
+    return get_coral_label_mode()
+
+def save_range_metrics_excel(
+    save_dir,
+    model_or_path,
+    splits,
+    batch_size: int = 256,
+    excel_name: str = "range_metrics.xlsx",
+):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    model = _load_model_if_needed(model_or_path)
+
+    # ✅ global mode (meta.json > env)
+    label_mode = _resolve_label_mode_global(model_or_path)
+
+    rows = []
+    per_split_tables = {}
+
+    for split_name, pack in splits.items():
+        X = pack["X"]
+        sensor_rng = _as_1d(pack["sensor_rng"]).astype(np.float32)
+        camera_rng = _as_1d(pack["camera_rng"]).astype(np.float32)
+
+        N = len(camera_rng)
+        assert len(sensor_rng) == N, f"{split_name}: sensor_rng length mismatch"
+
+        # baseline
+        base_err = camera_rng - sensor_rng
+        base_mae = float(np.mean(np.abs(base_err)))
+        base_mse = float(np.mean(base_err ** 2))
+
+        # predict label (force 1D to avoid broadcasting bugs)
+        y_pred_label = _as_1d(_predict_reg(model, X, batch_size=batch_size)).astype(np.float32)
+        assert len(y_pred_label) == N, f"{split_name}: y_pred length mismatch"
+
+        # convert label -> predicted error in meters
+        if label_mode == "ratio":
+            pred_error = y_pred_label * sensor_rng
+        else:  # "error"
+            pred_error = y_pred_label
+
+        pred_error = _as_1d(pred_error).astype(np.float32)
+
+        # corrected range
+        pred_rng = sensor_rng - pred_error
+
+        # range metrics
+        pred_err = camera_rng - pred_rng
+        pred_mae = float(np.mean(np.abs(pred_err)))
+        pred_mse = float(np.mean(pred_err ** 2))
+
+        rows.append({
+            "split": split_name,
+            "N": int(N),
+            "label_mode_used": label_mode,
+            "MAE(camera, sensor)": base_mae,
+            "MSE(camera, sensor)": base_mse,
+            "MAE(camera, predicted_rng)": pred_mae,
+            "MSE(camera, predicted_rng)": pred_mse,
+            "MAE_improvement_%": 100.0 * (base_mae - pred_mae) / (base_mae + 1e-12),
+            "MSE_improvement_%": 100.0 * (base_mse - pred_mse) / (base_mse + 1e-12),
+        })
+
+        per_split_tables[split_name] = pd.DataFrame({
+            "camera_rng": camera_rng,
+            "sensor_rng": sensor_rng,
+            "pred_label": y_pred_label,
+            "pred_error_m": pred_error,
+            "predicted_rng": pred_rng,
+            "baseline_err(camera-sensor)": base_err,
+            "pred_err(camera-pred)": pred_err,
+        })
+
+    df_summary = pd.DataFrame(rows)
+
+    xlsx_path = save_dir / excel_name
+    with pd.ExcelWriter(xlsx_path, engine="openpyxl") as writer:
+        df_summary.to_excel(writer, sheet_name="summary", index=False)
+        for split_name, df_split in per_split_tables.items():
+            df_split.to_excel(writer, sheet_name=split_name[:31], index=False)
+
+    df_summary.to_csv(save_dir / "range_metrics_summary.csv", index=False)
     return df_summary

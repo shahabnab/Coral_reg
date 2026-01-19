@@ -73,3 +73,39 @@ def take_weights_local(balanced_dtsets: dict, s_d: dict) -> dict:
         out[key] = np.ones((n,), dtype=np.float32)
 
     return out
+
+import os
+import json
+from pathlib import Path
+
+def get_coral_label_mode(default: str = "ratio") -> str:
+    """
+    Single source of truth for label mode.
+    Reads env CORAL_LABEL_MODE and validates it.
+    """
+    mode = os.environ.get("CORAL_LABEL_MODE", default).strip().lower()
+    if mode not in ("ratio", "error"):
+        raise ValueError(f"Invalid CORAL_LABEL_MODE='{mode}'. Use 'ratio' or 'error'.")
+    return mode
+
+
+def save_run_meta(save_dir, **extra):
+    """Save metadata next to model outputs."""
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    meta = {
+        "CORAL_LABEL_MODE": get_coral_label_mode(),
+        **extra
+    }
+    (save_dir / "run_meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+def load_run_meta(model_dir):
+    """Load metadata if exists; return dict or {}."""
+    model_dir = Path(model_dir)
+    meta_path = model_dir / "run_meta.json"
+    if meta_path.exists():
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    return {}
+

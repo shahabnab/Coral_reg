@@ -389,7 +389,7 @@ def run_training(
         validation_data=ds_va,
         validation_steps=val_steps,
         callbacks=(callbacks or []),
-        verbose=1,
+        verbose=2,
     )
 
     test_metrics = engine.evaluate(ds_te, verbose=0, return_dict=True)

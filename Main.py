@@ -247,7 +247,7 @@ def run_scenario(s_d):
         Evaluate a fixed split (e.g., test_adaption) at each epoch end using inference only.
         Computes MAE/MSE without calling model.evaluate() (avoids touching Keras metric state).
         """
-        def __init__(self, *, name: str, X, y, d, w, batch_size: int, pred_key: str = "pred", verbose: int = 1):
+        def __init__(self, *, name: str, X, y, d, w, batch_size: int, pred_key: str = "pred", verbose: int = 0):
             super().__init__()
             self.name_ = str(name)
             self.X = np.asarray(X, dtype=np.float32)
@@ -367,7 +367,7 @@ def run_scenario(s_d):
                 X=X_ta, y=y_ta, d=d_ta, w=w_ta,
                 batch_size=batch,
                 pred_key=cfg.output_pred_key,
-                verbose=1,
+                verbose=0,
             )
         )
 
