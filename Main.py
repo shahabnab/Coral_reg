@@ -29,7 +29,7 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 # --- Global label mode (set once, used everywhere) ---
 # "ratio": y = (sensor-camera)/sensor
 # "error": y = (sensor-camera)  (meters)
-CORAL_LABEL_MODE = "ratio"  # <-- change to "error" when needed
+CORAL_LABEL_MODE = "error"  # <-- change to "error" when needed
 os.environ["CORAL_LABEL_MODE"] = CORAL_LABEL_MODE
 # ----------------------------------------------------
 
@@ -316,7 +316,7 @@ def run_scenario(s_d):
                 print(f"[TREND] {self.name_:>12} | mae={mae_f:.6f}  mse={mse_f:.6f}")
 
     def objective_coral(trial, force_epochs=None, force_batch=None, save_tag=""):
-        epochs = int(force_epochs or trial.suggest_int("EPOCHS", 20, 120))
+        epochs = int(force_epochs or trial.suggest_int("EPOCHS", 30, 40))
         batch  = int(force_batch  or trial.suggest_categorical("BATCH", [64, 128, 256]))
         lr     = float(trial.suggest_float("LR", 1e-5, 3e-3, log=True))
 

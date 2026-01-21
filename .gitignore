@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
-
+df.xlsx
 data/
 datasets/
 runs/
@@ -27,3 +27,5 @@ models/
 # but keep files in the root (optional)
 !/*
 TU_IOT_to_Office/
+TU_IOT_to_Office_error18/
+
