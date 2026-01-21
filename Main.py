@@ -317,10 +317,10 @@ def run_scenario(s_d):
 
     def objective_coral(trial, force_epochs=None, force_batch=None, save_tag=""):
         epochs = int(force_epochs or trial.suggest_int("EPOCHS", 30, 40))
-        batch  = int(force_batch  or trial.suggest_categorical("BATCH", [64, 128, 256]))
-        lr     = float(trial.suggest_float("LR", 1e-5, 3e-3, log=True))
+        batch  = int(force_batch  or trial.suggest_categorical("BATCH", [64]))
+        lr     = float(trial.suggest_float("LR", 1e-5, 5e-5, log=True))
 
-        coral_lambda = float(trial.suggest_float("CORAL_LAMBDA", 0.0, 2.0))
+        coral_lambda = float(trial.suggest_float("CORAL_LAMBDA", 0.1, 2.0))
         recon_lambda = float(trial.suggest_float("RECON_LAMBDA", 1e-4, 1e-1, log=True))
 
 
