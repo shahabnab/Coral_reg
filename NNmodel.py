@@ -58,7 +58,9 @@ def build_coral_cir_reg_model(input_shape, latent_dim=64, base_filters=32, dropo
     x = tf.keras.layers.Conv1D(base_filters * 4, 5, padding="same", activation="relu")(x)
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
 
-    z = tf.keras.layers.Dense(latent_dim, name="latent")(x)
+    #z = tf.keras.layers.Dense(latent_dim, name="latent")(x)
+    z_dense = tf.keras.layers.Dense(latent_dim)(x)
+    z = tf.keras.layers.BatchNormalization(name="latent")(z_dense) # <--- Forces features to be O(1)
 
     # ----- Regression head -----
     h = tf.keras.layers.Dense(max(latent_dim // 2, 8), activation="relu")(z)

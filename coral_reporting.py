@@ -383,7 +383,7 @@ def _resolve_label_mode_global(model_or_path) -> str:
             return m
     return get_coral_label_mode()
 
-def save_range_metrics_excel(
+""" def save_range_metrics_excel(
     save_dir,
     model_or_path,
     splits,
@@ -465,4 +465,96 @@ def save_range_metrics_excel(
             df_split.to_excel(writer, sheet_name=split_name[:31], index=False)
 
     df_summary.to_csv(save_dir / "range_metrics_summary.csv", index=False)
-    return df_summary
+    return df_summary """
+
+def save_range_metrics_excel(save_dir, df_summary, per_split_tables, label_mode="error"):
+    """
+    Saves Excel reports.
+    Now accepts 'label_mode' (e.g., 'error' or 'ratio') to log which mode was used.
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    # We will rebuild a detailed summary rows list to include improvements
+    rows = []
+
+    for split_name, df in per_split_tables.items():
+        # Clean up column names if needed
+        cols = df.columns
+        
+        # 1. Identify Camera & Sensor ranges
+        #    (Adjust these keys if your DF uses slightly different names)
+        if "camera rng" in cols:
+            camera_rng = df["camera rng"].to_numpy()
+        elif "camera_rng" in cols:
+            camera_rng = df["camera_rng"].to_numpy()
+        else:
+            # Fallback or skip
+            continue
+
+        if "Sensor rng" in cols:
+            sensor_rng = df["Sensor rng"].to_numpy()
+        elif "sensor_rng" in cols:
+            sensor_rng = df["sensor_rng"].to_numpy()
+        else:
+            continue
+
+        # 2. Identify Prediction
+        if "predicted_rng" in cols:
+            pred_rng = df["predicted_rng"].to_numpy()
+        else:
+            continue
+
+        N = len(df)
+
+        # 3. Calculate Metrics
+        # Baseline: Sensor vs Camera
+        base_err = sensor_rng - camera_rng
+        base_mae = float(np.mean(np.abs(base_err)))
+        base_mse = float(np.mean(base_err ** 2))
+
+        # Prediction: Model vs Camera
+        pred_err = pred_rng - camera_rng  # Note: pred_rng was already calc as (sensor - predicted_error)
+        pred_mae = float(np.mean(np.abs(pred_err)))
+        pred_mse = float(np.mean(pred_err ** 2))
+
+        # Improvement %
+        imp_mae = 100.0 * (base_mae - pred_mae) / (base_mae + 1e-12)
+        imp_mse = 100.0 * (base_mse - pred_mse) / (base_mse + 1e-12)
+
+        rows.append({
+            "split": split_name,
+            "N": int(N),
+            "label_mode_used": label_mode,  # <--- Now valid because we added the argument
+            "MAE(camera, sensor)": base_mae,
+            "MSE(camera, sensor)": base_mse,
+            "MAE(camera, predicted_rng)": pred_mae,
+            "MSE(camera, predicted_rng)": pred_mse,
+            "MAE_improvement_percent": imp_mae,
+            "MSE_improvement_percent": imp_mse,
+        })
+
+    # Create Summary DataFrame
+    df_metrics = pd.DataFrame(rows)
+    
+    # Save to Excel
+    excel_path = save_dir / "eval_report.xlsx"
+    
+    try:
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            # Sheet 1: High-level metrics
+            df_metrics.to_excel(writer, sheet_name="Metrics", index=False)
+            
+            # Sheet 2: The original summary passed from training engine (optional)
+            if df_summary is not None and not df_summary.empty:
+                df_summary.to_excel(writer, sheet_name="Training_Log", index=False)
+                
+            # Sheets 3+: Per-split details (first 1000 rows to keep file size small)
+            for split_name, df in per_split_tables.items():
+                safe_name = split_name[:30]  # Excel sheet limit
+                df.head(2000).to_excel(writer, sheet_name=safe_name, index=False)
+                
+        print(f"[Report] Saved Excel report to: {excel_path}")
+        
+    except Exception as e:
+        print(f"[Report] Failed to save Excel: {e}")

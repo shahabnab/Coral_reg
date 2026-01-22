@@ -16,6 +16,8 @@
 import os
 import gc
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler
+import joblib  # To save the scaler for later use
 
 import numpy as np
 import pandas as pd
@@ -196,8 +198,45 @@ def run_scenario(s_d):
     reg_col = "error ratio" if CORAL_LABEL_MODE == "ratio" else "error"
     y_pack_key = "y_ratio" if CORAL_LABEL_MODE == "ratio" else "y_error"
 
-    RegLabels = take_reg_labels(balanced_dtsets, col=reg_col)
-    # -------------------------------------------------------------
+    labels_dict = take_reg_labels(balanced_dtsets, col=reg_col)
+    
+    # =========================================================================
+    # [NEW] LABEL SCALING (Z-Score Normalization)
+    # =========================================================================
+    from sklearn.preprocessing import StandardScaler
+    import joblib
+
+    print(f"\n[{scen}] --- SCALING LABELS (Z-Score) ---")
+    
+    # Initialize Scaler
+    scaler = StandardScaler()
+
+    # A. Collect ONLY Source Training labels to fit the scaler
+    #    (Crucial: We must not "peek" at the Target/Test distribution)
+    y_train_concat = np.concatenate([
+        labels_dict[k] for k in labels_dict if "TRAIN" in k
+    ])
+    
+    # B. Fit the scaler (Learn Mean and Std from Source)
+    scaler.fit(y_train_concat.reshape(-1, 1))
+    print(f"   Source Label Mean: {scaler.mean_[0]:.4f}")
+    print(f"   Source Label Std:  {scaler.scale_[0]:.4f}")
+
+    # C. Transform ALL labels in the dictionary (Train, Adaption, Test)
+    #    Now the model trains on values like -0.5, 0.0, +1.2 instead of 1500, 2000
+    for k in labels_dict:
+        # Reshape to (N,1) -> transform -> flatten back to (N,)
+        labels_dict[k] = scaler.transform(labels_dict[k].reshape(-1, 1)).flatten()
+
+    # D. Save scaler so we can un-scale predictions later for reporting
+    scaler_dir = Path(f"scalers/{scenario_path}")
+    scaler_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(scaler, scaler_dir / "target_scaler.pkl")
+    print(f"   Scaler saved to: {scaler_dir}")
+    # =========================================================================
+
+    # 2. Assign Domain IDs
+    domains_dict = take_domains_local(balanced_dtsets, s_d)
 
     Domains   = take_domains_local(balanced_dtsets, s_d)
     Weights   = take_weights_local(balanced_dtsets, s_d)
@@ -206,7 +245,7 @@ def run_scenario(s_d):
     def pack_split(split_key: str):
         df = balanced_dtsets[split_key]
         X = np.asarray(CIRS[split_key])[..., None].astype("float32", copy=True)
-        y = np.asarray(RegLabels[split_key]).astype(np.float32, copy=True)
+        y = np.asarray(labels_dict[split_key]).astype(np.float32, copy=True)
         d = np.asarray(Domains[split_key]).astype(np.int32, copy=True)
         w = np.ones_like(y, dtype=np.float32)
 
@@ -220,7 +259,7 @@ def run_scenario(s_d):
     X = np.concatenate([CIRS[k] for k in train_roles])[..., None].astype("float32", copy=True)
     d = np.concatenate([Domains[k] for k in train_roles]).astype(np.int32, copy=True)
     w = np.concatenate([Weights[k] for k in train_roles]).astype(np.float32, copy=True)
-    y = np.concatenate([RegLabels[k] for k in train_roles]).astype(np.float32, copy=True)
+    y = np.concatenate([labels_dict[k] for k in train_roles]).astype(np.float32, copy=True)
 
     # pack eval splits for each split "Adaption", "test_adaption", "TEST"
     X_ad, y_ad, d_ad, w_ad, s_ad, c_ad = pack_split("ADAPTION")
@@ -317,19 +356,19 @@ def run_scenario(s_d):
 
     def objective_coral(trial, force_epochs=None, force_batch=None, save_tag=""):
         epochs = int(force_epochs or trial.suggest_int("EPOCHS", 30, 40))
-        batch  = int(force_batch  or trial.suggest_categorical("BATCH", [64]))
+        batch  = int(force_batch  or trial.suggest_categorical("BATCH", [64,128]))
         lr     = float(trial.suggest_float("LR", 1e-5, 5e-5, log=True))
 
-        coral_lambda = float(trial.suggest_float("CORAL_LAMBDA", 0.1, 2.0))
-        recon_lambda = float(trial.suggest_float("RECON_LAMBDA", 1e-4, 1e-1, log=True))
+        coral_lambda = float(trial.suggest_float("CORAL_LAMBDA", 100.0, 5000.0))
+        recon_lambda = float(trial.suggest_float("RECON_LAMBDA", 1e-5, 1e-3, log=True))
 
 
-        latent_dim   = int(trial.suggest_categorical("LATENT_DIM", [32, 64, 128, 256]))
-        base_filters = int(trial.suggest_categorical("BASE_FILTERS", [16, 32, 48, 64]))
-        dropout      = float(trial.suggest_float("DROPOUT", 0.0, 0.35))
+        latent_dim   = int(trial.suggest_categorical("LATENT_DIM", [32, 64]))
+        base_filters = int(trial.suggest_categorical("BASE_FILTERS", [16, 32]))
+        dropout      = float(trial.suggest_float("DROPOUT", 0.0, 0.3))
 
         # NEW: ramp-up (0 disables)
-        coral_ramp_epochs = int(trial.suggest_categorical("CORAL_RAMP_EPOCHS", [0, 5, 10, 20, 30]))
+        coral_ramp_epochs = int(trial.suggest_categorical("CORAL_RAMP_EPOCHS", [10,40]))
 
         cfg = EngineConfig(**cfg_base.__dict__)
         cfg.recon_lambda = recon_lambda  # NEW

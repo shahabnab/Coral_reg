@@ -34,7 +34,7 @@ def reg_label_col(use_error_ratio: bool | None = None) -> str:
         use_error_ratio = _use_error_ratio()
     return "error ratio" if use_error_ratio else "error"
 
-def get_error(df, use_error_ratio: bool | None = None):
+""" def get_error(df, use_error_ratio: bool | None = None):
     real_rng   = df["camera rng"].values.astype(np.float32)
     sensor_rng = df["Sensor rng"].values.astype(np.float32)
 
@@ -53,6 +53,35 @@ def get_error(df, use_error_ratio: bool | None = None):
     # (optional) if you rely on this filter later
     df["error in (cm)"] = (df["error"] * 100.0).astype(np.float32)
 
+    return df """
+def get_error(df, use_error_ratio: bool | None = None):
+    """
+    Computes error metrics and ADDS them as columns to the DataFrame.
+    MUST return the DataFrame (not an array) to preserve compatibility.
+    """
+    # 1. Identify columns safely
+    real_rng = df["camera rng"].values.astype(np.float32)
+    
+    if "Sensor rng" in df.columns:
+        sensor_rng = df["Sensor rng"].values.astype(np.float32)
+    elif "sensor_rng" in df.columns:
+        sensor_rng = df["sensor_rng"].values.astype(np.float32)
+    else:
+        raise KeyError(f"Sensor range column not found. Available: {df.columns}")
+
+    # 2. Compute metrics
+    diff = (sensor_rng - real_rng).astype(np.float32)
+    # Avoid division by zero for ratio
+    ratio = diff / (sensor_rng + 1e-6)
+    ratio = ratio.astype(np.float32)
+
+    # 3. Modify DataFrame IN-PLACE
+    #    (We add all versions so downstream code can pick what it needs)
+    df["error"] = diff
+    df["error ratio"] = ratio
+    df["error in (cm)"] = diff * 100.0  # Crucial: used for filtering TU in download_dataset
+
+    # 4. RETURN THE DATAFRAME
     return df
 
 def download_dataset(datasets_names,test_adaption_name,SEED):
